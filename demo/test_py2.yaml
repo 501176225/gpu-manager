@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pytorch-test2
+spec:
+  restartPolicy: Never
+  containers:
+  - image: mnist_pytorch
+    imagePullPolicy: IfNotPresent
+    name: pytorch
+    command: ["sh", "-c", "nvidia-smi; sleep infinity"]
+    resources:
+      requests:
+        tencent.com/vcuda-core: "30"
+        tencent.com/vcuda-memory: "10"
+      limits:
+        tencent.com/vcuda-core: "30"
+        tencent.com/vcuda-memory: "10"

@@ -1,0 +1,272 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-quota-admission
+  namespace: kube-system
+data:
+  gpu-quota-admission.config: |
+    {
+         "QuotaConfigMapName": "gpuquota",
+         "QuotaConfigMapNamespace": "kube-system",
+         "GPUModelLabel": "gaia.tencent.com/gpu-model",
+         "GPUPoolLabel": "gaia.tencent.com/gpu-pool"
+     }
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpu-quota-admission
+  namespace: kube-system
+spec:
+  ports:
+  - port: 3456
+    protocol: TCP
+    targetPort: 3456
+  selector:
+    k8s-app: gpu-quota-admission
+  type: ClusterIP
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    k8s-app: gpu-quota-admission
+  name: gpu-quota-admission
+  namespace: kube-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      k8s-app: gpu-quota-admission
+  template:
+    metadata:
+      labels:
+        k8s-app: gpu-quota-admission
+      namespace: kube-system
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - preference:
+              matchExpressions:
+              - key: node-role.kubernetes.io/master
+                operator: Exists
+            weight: 1
+      containers:
+      - env:
+        - name: LOG_LEVEL
+          value: "4"
+        - name: EXTRA_FLAGS
+          value: --incluster-mode=true
+        image: ccr.ccs.tencentyun.com/tkeimages/gpu-quota-admission:latest
+        imagePullPolicy: IfNotPresent
+        name: gpu-quota-admission
+        ports:
+        - containerPort: 3456
+          protocol: TCP
+        resources:
+          limits:
+            cpu: "2"
+            memory: 2Gi
+          requests:
+            cpu: "1"
+            memory: 1Gi
+        volumeMounts:
+        - mountPath: /root/gpu-quota-admission/
+          name: config
+      dnsPolicy: ClusterFirstWithHostNet
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - ' mkdir -p /etc/kubernetes/ && cp /root/gpu-quota-admission/gpu-quota-admission.config
+          /etc/kubernetes/'
+        image: busybox
+        imagePullPolicy: Always
+        name: init-kube-config
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - mountPath: /root/gpu-quota-admission/
+          name: config
+      priority: 2000000000
+      priorityClassName: system-cluster-critical
+      restartPolicy: Always
+      serviceAccount: gpu-manager
+      serviceAccountName: gpu-manager
+      terminationGracePeriodSeconds: 30
+      tolerations:
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/master
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: gpu-quota-admission
+        name: config
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gpu-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: gpu-manager
+  namespace: kube-system
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gpu-manager
+  namespace: kube-system
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpu-manager-metric
+  namespace: kube-system
+  annotations:
+    prometheus.io/scrape: "true"
+  labels:
+    kubernetes.io/cluster-service: "true"
+spec:
+  clusterIP: None
+  ports:
+    - name: metrics
+      port: 5678
+      protocol: TCP
+      targetPort: 5678
+  selector:
+    name: gpu-manager-ds
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gpu-manager-daemonset
+  namespace: kube-system
+spec:
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      name: gpu-manager-ds
+  template:
+    metadata:
+      annotations:
+        scheduler.alpha.kubernetes.io/critical-pod: ""
+      labels:
+        name: gpu-manager-ds
+    spec:
+      serviceAccount: gpu-manager
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+        - key: tencent.com/vcuda-core
+          operator: Exists
+          effect: NoSchedule
+      priorityClassName: "system-node-critical"
+      nodeSelector:
+        nvidia-device-enable: enable
+      hostPID: true
+      initContainers:
+        - image: menghe.tencentcloudcr.com/public/alpine-uvm:0.1
+          imagePullPolicy: IfNotPresent
+          name: nvidia-uvm-enable
+          securityContext:
+            capabilities:
+              add:
+              - ALL
+          volumeMounts:
+          - mountPath: /lib/modules
+            name: lib-modules
+            readOnly: true
+          - mountPath: /dev
+            name: dev
+      containers:
+        - image: tkestack/gpu-manager:v1.0.9
+          imagePullPolicy: IfNotPresent
+          name: gpu-manager
+          securityContext:
+            privileged: true
+          ports:
+            - containerPort: 5678
+          volumeMounts:
+            - name: device-plugin
+              mountPath: /var/lib/kubelet/device-plugins
+            - name: vdriver
+              mountPath: /etc/gpu-manager/vdriver
+            - name: vmdata
+              mountPath: /etc/gpu-manager/vm
+            - name: log
+              mountPath: /var/log/gpu-manager
+            - mountPath: /var/run/docker.sock
+              name: docker 
+              readOnly: true 
+            - name: run-dir
+              mountPath: /var/run
+            - name: cgroup
+              mountPath: /sys/fs/cgroup
+              readOnly: true
+            - name: usr-directory
+              mountPath: /usr/local/host
+              readOnly: true
+          env:
+            - name: LOG_LEVEL
+              value: "4"
+            - name: EXTRA_FLAGS
+              value: --incluster-mode=true
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: spec.nodeName
+      volumes:
+        - name: device-plugin
+          hostPath:
+            type: Directory
+            path: /var/lib/kubelet/device-plugins
+        - name: vmdata
+          hostPath:
+            type: DirectoryOrCreate
+            path: /etc/gpu-manager/vm
+        - name: vdriver
+          hostPath:
+            type: DirectoryOrCreate
+            path: /etc/gpu-manager/vdriver
+        - name: log
+          hostPath:
+            type: DirectoryOrCreate
+            path: /etc/gpu-manager/log
+        - name: docker
+          hostPath:
+            type: File
+            path: /var/run/docker.sock
+        - name: cgroup
+          hostPath:
+            type: Directory
+            path: /sys/fs/cgroup
+        - name: usr-directory
+          hostPath:
+            type: Directory
+            path: /usr
+        - name: run-dir
+          hostPath:
+            type: Directory
+            path: /var/run
+        - name: lib-modules
+          hostPath:
+            type: Directory
+            path: /lib/modules
+        - name: dev
+          hostPath:
+            type: Directory
+            path: /dev/

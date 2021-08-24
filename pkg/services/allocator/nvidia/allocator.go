@@ -342,6 +342,7 @@ func (ta *NvidiaTopoAllocator) allocateOne(pod *v1.Pod, container *v1.Container,
 		allocated                   bool
 	)
 
+	//判断该pod是否需要GPU，如果需要，则为0
 	predicateMissed = !utils.IsGPUPredicatedPod(pod)
 	singleNodeMemory := int64(ta.tree.Leaves()[0].Meta.TotalMemory)
 	for _, v := range req.DevicesIDs {
@@ -415,8 +416,11 @@ func (ta *NvidiaTopoAllocator) allocateOne(pod *v1.Pod, container *v1.Container,
 			if !ok {
 				return nil, fmt.Errorf("can not find evaluator share")
 			}
+			//nodes 分配的GPU设备
 			nodes = eval.Evaluate(needCores, needMemory)
+		
 			if len(nodes) == 0 {
+				//未完成节点分配
 				if shareMode && needMemory > singleNodeMemory {
 					return nil, fmt.Errorf("request memory %d is larger than %d", needMemory, singleNodeMemory)
 				}
@@ -425,12 +429,15 @@ func (ta *NvidiaTopoAllocator) allocateOne(pod *v1.Pod, container *v1.Container,
 			}
 
 			if !predicateMissed {
+				// 需要分配GPU
 				// get predicate node by annotation
+				// 返回container在pod中的编号
 				containerIndex, err := utils.GetContainerIndexByName(pod, container.Name)
 				if err != nil {
 					return nil, err
 				}
 				var devStr string
+				//获得在scheduler中分配的GPU的编号
 				if idxStr, ok := pod.ObjectMeta.Annotations[types.PredicateGPUIndexPrefix+strconv.Itoa(containerIndex)]; ok {
 					if _, err := strconv.Atoi(idxStr); err != nil {
 						return nil, fmt.Errorf("predicate idx %s invalid for pod %s ", idxStr, pod.UID)
@@ -448,10 +455,14 @@ func (ta *NvidiaTopoAllocator) allocateOne(pod *v1.Pod, container *v1.Container,
 					return nil, fmt.Errorf("failed to get predicate node %s", devStr)
 				}
 
+				//检查两次分配的pod是否相同
 				// check if we choose the same node as scheduler
 				if predicateNode.MinorName() != nodes[0].MinorName() {
-					return nil, fmt.Errorf("Nvidia node mismatch for pod %s(%s), pick up:%s  predicate: %s",
-						pod.Name, container.Name, nodes[0].MinorName(), predicateNode.MinorName())
+					nodes[0].MinorName = redicateNode.MinorName()
+					klog.V(2).Infof("Nvidia node mismatch for pod %s(%s), pick up:%s  predicate: %s, use: %s",
+						pod.Name, container.Name, nodes[0].MinorName(), predicateNode.MinorName(), nodes[0].MinorName())
+					//return nil, fmt.Errorf("Nvidia node mismatch for pod %s(%s), pick up:%s  predicate: %s",
+						//pod.Name, container.Name, nodes[0].MinorName(), predicateNode.MinorName())
 				}
 			}
 		}

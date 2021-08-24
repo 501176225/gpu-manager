@@ -184,6 +184,8 @@ func (t *NvidiaTree) parseFromLibrary() error {
 	nodes := make(LevelMap)
 	t.leaves = make([]*NvidiaNode, num)
 
+
+	//初始化叶子节点
 	for i := 0; i < int(num); i++ {
 		dev, _ := nvml.DeviceGetHandleByIndex(uint(i))
 		_, _, totalMem, _ := dev.DeviceGetMemoryInfo()
@@ -202,6 +204,7 @@ func (t *NvidiaTree) parseFromLibrary() error {
 		t.addNode(n)
 	}
 
+	//初始化拓扑节点
 	for cardA := uint(0); cardA < num; cardA++ {
 		devA, _ := nvml.DeviceGetHandleByIndex(cardA)
 		for cardB := cardA + 1; cardB < num; cardB++ {
@@ -573,7 +576,7 @@ func (t *NvidiaTree) updateNode(idx int) *NvidiaNode {
 
 	for _, pid := range pids {
 		node.Meta.Pids = append(node.Meta.Pids, pid.Pid)
-		node.Meta.UsedMemory += pid.UsedGPUMemory
+		node.Meta. += pid.UsedGPUMemory
 	}
 
 	return node
